@@ -16,6 +16,7 @@ try:
     from .active_experiment_agent import ActiveExperimentAgent
     from .scheduler_agent import SchedulerAgent
     from .explanation_agent import ExplanationAgent
+    from .utils import validate_diagnostic_input
 except ImportError:
     from data_models import DiagnosticRun, FeatureVector, FaultLocation
     from fleet_matching_agent import FleetMatchingAgent
@@ -23,86 +24,17 @@ except ImportError:
     from active_experiment_agent import ActiveExperimentAgent
     from scheduler_agent import SchedulerAgent
     from explanation_agent import ExplanationAgent
+    from utils import validate_diagnostic_input
 
 
+# Legacy wrapper for backward compatibility
 def validate_input_data(run_data: Dict[str, Any]) -> Tuple[bool, List[str], List[str]]:
     """
-    Validate input data quality for real sensor data.
+    Legacy validation wrapper - calls central validation gate.
     
-    Args:
-        run_data: Input diagnostic run dictionary
-        
-    Returns:
-        Tuple of (is_valid, errors, warnings)
+    Deprecated: Use validate_diagnostic_input() from utils.py directly.
     """
-    errors = []
-    warnings_list = []
-    
-    # Check required fields
-    if "run_id" not in run_data:
-        errors.append("Missing required field: run_id")
-    
-    if "fault_location" not in run_data:
-        errors.append("Missing required field: fault_location")
-    elif not isinstance(run_data["fault_location"], dict):
-        errors.append("fault_location must be a dictionary")
-    else:
-        loc = run_data["fault_location"]
-        if "x" not in loc or "y" not in loc:
-            errors.append("fault_location must contain 'x' and 'y' coordinates")
-        else:
-            if not (0 <= loc["x"] <= 1):
-                errors.append(f"fault_location.x={loc['x']} out of range [0, 1]")
-            if not (0 <= loc["y"] <= 1):
-                errors.append(f"fault_location.y={loc['y']} out of range [0, 1]")
-    
-    if "features" not in run_data:
-        errors.append("Missing required field: features")
-    else:
-        features = run_data["features"]
-        
-        # Validate frequency
-        freq = features.get("dominant_frequency", -1)
-        if freq < 1 or freq > 5000:
-            errors.append(f"dominant_frequency={freq} out of valid range [1, 5000] Hz")
-        
-        # Validate RMS vibration
-        rms = features.get("rms_vibration", -1)
-        if rms < 0 or rms > 15:
-            errors.append(f"rms_vibration={rms} out of valid range [0, 15] m/s²")
-        elif rms > 10:
-            warnings_list.append(f"Very high rms_vibration={rms} - check sensor saturation")
-        
-        # Validate entropy
-        entropy = features.get("spectral_entropy", -1)
-        if entropy < 0 or entropy > 1:
-            errors.append(f"spectral_entropy={entropy} must be in range [0, 1]")
-        elif entropy < 0.1:
-            warnings_list.append(f"Very low spectral_entropy={entropy} - possible sensor issue")
-        
-        # Validate bearing energy
-        bearing = features.get("bearing_energy_band", -1)
-        if bearing < 0 or bearing > 1:
-            errors.append(f"bearing_energy_band={bearing} must be in range [0, 1]")
-        
-        # Validate audio score
-        audio = features.get("audio_anomaly_score", -1)
-        if audio < 0 or audio > 1:
-            errors.append(f"audio_anomaly_score={audio} must be in range [0, 1]")
-        
-        # Validate speed dependency
-        speed_dep = features.get("speed_dependency", "")
-        if speed_dep not in ["weak", "medium", "strong"]:
-            errors.append(f"speed_dependency='{speed_dep}' must be one of: weak, medium, strong")
-        
-        # Check for unrealistic combinations
-        if freq < 500 and bearing > 0.8:
-            warnings_list.append(
-                f"Low frequency ({freq} Hz) with high bearing energy ({bearing}) is unusual"
-            )
-    
-    is_valid = len(errors) == 0
-    return is_valid, errors, warnings_list
+    return validate_diagnostic_input(run_data)
 
 
 def load_real_fleet_database(fleet_db_path: Path) -> Optional[List[Dict[str, Any]]]:
@@ -173,12 +105,21 @@ def run_person_c_pipeline(
     
     # Validate inputs if requested
     validated_runs = []
+    run_validation_info = {}  # Store validation info per run
     validation_summary = {"total": len(input_runs), "valid": 0, "invalid": 0, "warnings": 0}
     
     if validate_inputs:
         print("Validating input data...")
         for run_data in input_runs:
             is_valid, errors, warnings_list = validate_input_data(run_data)
+            run_id = run_data.get('run_id', 'unknown')
+            
+            # Store validation info for this run
+            run_validation_info[run_id] = {
+                "is_valid": is_valid,
+                "errors": errors,
+                "warnings": warnings_list
+            }
             
             if is_valid:
                 validated_runs.append(run_data)
@@ -186,12 +127,12 @@ def run_person_c_pipeline(
                 
                 if warnings_list:
                     validation_summary["warnings"] += len(warnings_list)
-                    print(f"  ⚠ {run_data.get('run_id', 'unknown')}: {len(warnings_list)} warning(s)")
+                    print(f"  ⚠ {run_id}: {len(warnings_list)} warning(s)")
                     for warning in warnings_list:
                         print(f"    - {warning}")
             else:
                 validation_summary["invalid"] += 1
-                print(f"  ✗ {run_data.get('run_id', 'unknown')}: INVALID")
+                print(f"  ✗ {run_id}: INVALID")
                 for error in errors:
                     print(f"    - {error}")
         
@@ -201,6 +142,7 @@ def run_person_c_pipeline(
             print(f"Skipping {validation_summary['invalid']} invalid run(s)\n")
     else:
         validated_runs = input_runs
+        run_validation_info = {}  # No validation performed
     
     if not validated_runs:
         print("No valid runs to process. Exiting.")
@@ -328,6 +270,11 @@ def run_person_c_pipeline(
             "repair_schedule": scheduler_results,
             "repair_json": repair_json,
             "explanation": explanation_results,
+            "validation": run_validation_info.get(diagnostic_run.run_id, {
+                "is_valid": True,
+                "errors": [],
+                "warnings": []
+            }),
             "summary": {
                 "run_id": diagnostic_run.run_id,
                 "root_cause": root_cause,

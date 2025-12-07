@@ -204,3 +204,155 @@ def ensure_finite(value: float, default: float = 0.0) -> float:
         Original value if finite, otherwise default
     """
     return value if np.isfinite(value) else default
+
+
+# ==============================================================================
+# CENTRAL INPUT VALIDATION GATE (Phase 2)
+# ==============================================================================
+
+def validate_diagnostic_input(run_data: Dict[str, Any]) -> tuple:
+    """
+    Central authoritative validation for diagnostic input data.
+    
+    This is the single validation gate that ALL inputs must pass through
+    before any agent processing. Validates:
+    - Required fields presence
+    - Feature value ranges (physics-based limits)
+    - Data quality warnings (sensor saturation, anomalies)
+    
+    Args:
+        run_data: Diagnostic run dictionary with structure:
+            {
+                "run_id": str,
+                "fault_location": {"x": float, "y": float},
+                "features": {
+                    "dominant_frequency": float,
+                    "rms_vibration": float,
+                    "spectral_entropy": float,
+                    "bearing_energy_band": float,
+                    "audio_anomaly_score": float,
+                    "speed_dependency": str
+                },
+                "metadata": dict (optional)
+            }
+    
+    Returns:
+        Tuple of (is_valid: bool, errors: List[str], warnings: List[str])
+        - is_valid: False if any hard errors found
+        - errors: List of validation failures (hard stops)
+        - warnings: List of suspicious patterns (proceed with caution)
+    """
+    errors = []
+    warnings = []
+    
+    # ========== Required Fields ==========
+    if "run_id" not in run_data:
+        errors.append("Missing required field: run_id")
+    
+    if "fault_location" not in run_data:
+        errors.append("Missing required field: fault_location")
+    elif not isinstance(run_data["fault_location"], dict):
+        errors.append("fault_location must be a dictionary")
+    else:
+        loc = run_data["fault_location"]
+        if "x" not in loc or "y" not in loc:
+            errors.append("fault_location must contain 'x' and 'y' coordinates")
+        else:
+            # Validate coordinate ranges
+            if not (0 <= loc["x"] <= 1):
+                errors.append(f"fault_location.x={loc['x']} out of range [0, 1]")
+            if not (0 <= loc["y"] <= 1):
+                errors.append(f"fault_location.y={loc['y']} out of range [0, 1]")
+    
+    if "features" not in run_data:
+        errors.append("Missing required field: features")
+        # Cannot continue without features
+        return (False, errors, warnings)
+    
+    features = run_data["features"]
+    
+    # ========== Feature Validation (Hard Errors) ==========
+    
+    # 1. Dominant Frequency (1-5000 Hz typical automotive range)
+    freq = features.get("dominant_frequency", None)
+    if freq is None:
+        errors.append("Missing required feature: dominant_frequency")
+    elif not isinstance(freq, (int, float)):
+        errors.append(f"dominant_frequency must be numeric, got {type(freq).__name__}")
+    elif not (1 <= freq <= 5000):
+        errors.append(f"dominant_frequency={freq} out of valid range [1, 5000] Hz")
+    
+    # 2. RMS Vibration (0-50 m/s² physical limit, >15 is extreme)
+    rms = features.get("rms_vibration", None)
+    if rms is None:
+        errors.append("Missing required feature: rms_vibration")
+    elif not isinstance(rms, (int, float)):
+        errors.append(f"rms_vibration must be numeric, got {type(rms).__name__}")
+    elif not (0 <= rms <= 50):
+        errors.append(f"rms_vibration={rms} out of valid range [0, 50] m/s²")
+    
+    # 3. Spectral Entropy (0-2.0 theoretical max, >1.0 unusual for automotive)
+    entropy = features.get("spectral_entropy", None)
+    if entropy is None:
+        errors.append("Missing required feature: spectral_entropy")
+    elif not isinstance(entropy, (int, float)):
+        errors.append(f"spectral_entropy must be numeric, got {type(entropy).__name__}")
+    elif not (0 <= entropy <= 2.0):
+        errors.append(f"spectral_entropy={entropy} out of valid range [0, 2.0]")
+    
+    # 4. Bearing Energy Band (0-1 normalized)
+    bearing = features.get("bearing_energy_band", None)
+    if bearing is None:
+        errors.append("Missing required feature: bearing_energy_band")
+    elif not isinstance(bearing, (int, float)):
+        errors.append(f"bearing_energy_band must be numeric, got {type(bearing).__name__}")
+    elif not (0 <= bearing <= 1):
+        errors.append(f"bearing_energy_band={bearing} must be in range [0, 1]")
+    
+    # 5. Audio Anomaly Score (0-1 normalized)
+    audio = features.get("audio_anomaly_score", None)
+    if audio is None:
+        errors.append("Missing required feature: audio_anomaly_score")
+    elif not isinstance(audio, (int, float)):
+        errors.append(f"audio_anomaly_score must be numeric, got {type(audio).__name__}")
+    elif not (0 <= audio <= 1):
+        errors.append(f"audio_anomaly_score={audio} must be in range [0, 1]")
+    
+    # 6. Speed Dependency (categorical)
+    speed_dep = features.get("speed_dependency", None)
+    if speed_dep is None:
+        errors.append("Missing required feature: speed_dependency")
+    elif speed_dep not in ["weak", "medium", "strong"]:
+        errors.append(f"speed_dependency='{speed_dep}' must be one of: weak, medium, strong")
+    
+    # ========== Data Quality Warnings (Soft Issues) ==========
+    
+    # Only check warnings if no hard errors
+    if not errors:
+        # Sensor saturation warning
+        if rms is not None and rms > 10:
+            warnings.append(f"Very high rms_vibration={rms} - check sensor saturation")
+        
+        # Low entropy warning (stuck sensor or pure tone)
+        if entropy is not None and entropy < 0.05:
+            warnings.append(f"Very low spectral_entropy={entropy} - possible sensor issue")
+        
+        # Unusual feature combinations
+        if freq is not None and bearing is not None:
+            if freq < 500 and bearing > 0.8:
+                warnings.append(
+                    f"Low frequency ({freq} Hz) with high bearing energy ({bearing}) is unusual"
+                )
+        
+        # Very high entropy (noisy/chaotic signal)
+        if entropy is not None and entropy > 0.95:
+            warnings.append(f"Very high spectral_entropy={entropy} - signal may be too noisy")
+        
+        # Extreme audio anomaly
+        if audio is not None and audio > 0.95:
+            warnings.append(f"Extreme audio_anomaly_score={audio} - verify microphone data")
+    
+    # Determine overall validity
+    is_valid = len(errors) == 0
+    
+    return (is_valid, errors, warnings)
