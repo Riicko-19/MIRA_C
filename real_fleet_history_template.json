@@ -1,0 +1,94 @@
+[
+  {
+    "vehicle_id": "VIN_ABC123456789",
+    "run_id": "HIST_2024_001",
+    "features": {
+      "dominant_frequency": 138.5,
+      "rms_vibration": 3.9,
+      "spectral_entropy": 0.82,
+      "bearing_energy_band": 0.69,
+      "audio_anomaly_score": 0.71,
+      "speed_dependency": "strong"
+    },
+    "fault_location": {
+      "x": 0.68,
+      "y": 0.32
+    },
+    "known_cause": "Loose Mount",
+    "repair_confirmed": true,
+    "repair_date": "2024-03-15",
+    "workshop": "Main Service Center",
+    "repair_cost_usd": 285,
+    "downtime_hours": 2.5,
+    "notes": "Front-left engine mount loose. Retorqued to 85 Nm."
+  },
+  {
+    "vehicle_id": "VIN_DEF987654321",
+    "run_id": "HIST_2024_002",
+    "features": {
+      "dominant_frequency": 2750.0,
+      "rms_vibration": 2.4,
+      "spectral_entropy": 0.91,
+      "bearing_energy_band": 0.87,
+      "audio_anomaly_score": 0.83,
+      "speed_dependency": "weak"
+    },
+    "fault_location": {
+      "x": 0.25,
+      "y": 0.18
+    },
+    "known_cause": "Bearing Wear",
+    "repair_confirmed": true,
+    "repair_date": "2024-04-22",
+    "workshop": "Chassis Specialist",
+    "repair_cost_usd": 425,
+    "downtime_hours": 3.0,
+    "notes": "Front-left wheel bearing replaced. Race pitting visible."
+  },
+  {
+    "vehicle_id": "VIN_GHI456789123",
+    "run_id": "HIST_2024_003",
+    "features": {
+      "dominant_frequency": 72.3,
+      "rms_vibration": 3.2,
+      "spectral_entropy": 0.54,
+      "bearing_energy_band": 0.38,
+      "audio_anomaly_score": 0.63,
+      "speed_dependency": "strong"
+    },
+    "fault_location": {
+      "x": 0.18,
+      "y": 0.48
+    },
+    "known_cause": "Imbalance",
+    "repair_confirmed": true,
+    "repair_date": "2024-05-10",
+    "workshop": "General Service",
+    "repair_cost_usd": 95,
+    "downtime_hours": 1.0,
+    "notes": "All four wheels balanced. 45g weight added to front-right."
+  },
+  {
+    "vehicle_id": "VIN_JKL789123456",
+    "run_id": "HIST_2024_004",
+    "features": {
+      "dominant_frequency": 165.8,
+      "rms_vibration": 3.7,
+      "spectral_entropy": 0.68,
+      "bearing_energy_band": 0.58,
+      "audio_anomaly_score": 0.69,
+      "speed_dependency": "medium"
+    },
+    "fault_location": {
+      "x": 0.55,
+      "y": 0.45
+    },
+    "known_cause": "Misalignment",
+    "repair_confirmed": true,
+    "repair_date": "2024-06-18",
+    "workshop": "Alignment Specialist",
+    "repair_cost_usd": 380,
+    "downtime_hours": 3.5,
+    "notes": "Driveshaft angle 2.8 degrees. Realigned to 0.9 degrees."
+  }
+]
