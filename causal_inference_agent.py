@@ -22,10 +22,10 @@ from pathlib import Path
 
 try:
     from .data_models import DiagnosticRun, FeatureVector, FleetMatch
-    from .utils import normalize_probabilities, save_json
+    from .utils import normalize_probabilities, save_json, safe_corrcoef, ensure_finite
 except ImportError:
     from data_models import DiagnosticRun, FeatureVector, FleetMatch
-    from utils import normalize_probabilities, save_json
+    from utils import normalize_probabilities, save_json, safe_corrcoef, ensure_finite
 
 
 class CausalInferenceAgent:
@@ -118,11 +118,12 @@ class CausalInferenceAgent:
         for i, feature_name in enumerate(feature_names):
             if len(match_features) > 1:
                 # Pearson correlation between current value and fleet distribution
-                correlation = np.corrcoef(
+                # Using safe_corrcoef to avoid RuntimeWarnings when feature variance is zero
+                correlation = safe_corrcoef(
                     np.append(match_features[:, i], current_features[i]),
                     np.append(np.zeros(len(match_features)), 1)
-                )[0, 1]
-                correlations[feature_name] = float(correlation) if not np.isnan(correlation) else 0.0
+                )
+                correlations[feature_name] = correlation
             else:
                 correlations[feature_name] = 0.0
         
