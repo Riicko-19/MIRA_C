@@ -183,12 +183,17 @@ def run_person_c_pipeline(
         fleet_matches = fleet_agent.knn_match(diagnostic_run, k=k_neighbors)
         fleet_cause_probs = fleet_results["cause_probabilities_from_fleet"]
         
-        # Phase 2: Causal Inference
+        # Phase 2: Causal Inference (with Stage-0 Normal Detection)
         causal_results = causal_agent.process_run(
             diagnostic_run,
             fleet_matches,
             fleet_cause_probs
         )
+        
+        # UPGRADE: Check Stage-0 decision
+        stage0 = causal_results.get("stage0_normal_detection", {})
+        is_normal_stage0 = stage0.get("is_normal", False)
+        normal_confidence = stage0.get("normal_confidence", 0.0)
         
         # Export cause.json
         ranked_causes = causal_results["ranked_causes"]
@@ -203,44 +208,80 @@ def run_person_c_pipeline(
             output_dir
         )
         
-        # Phase 3: Active Experiment Design
+        # UPGRADE: If Stage-0 classified as Normal with high confidence, bypass experiments
         root_cause = causal_results["root_cause"]
-        experiment_results = experiment_agent.process_run(
-            diagnostic_run,
-            root_cause,
-            posteriors,
-            ranked_causes
-        )
         
-        # Generate experiment.json
-        experiment_json = experiment_agent.generate_experiment_instruction(
-            diagnostic_run,
-            root_cause,
-            experiment_results["alternate_causes"],
-            posteriors,
-            experiment_results["uncertainty_level"],
-            output_dir
-        )
-        
-        # Phase 4: Repair Scheduling
-        experiment_performed = experiment_results["experiment_required"]
-        confidence = posteriors.get(root_cause, 0)
-        
-        scheduler_results = scheduler_agent.process_run(
-            diagnostic_run,
-            root_cause,
-            confidence,
-            experiment_performed
-        )
-        
-        # Generate repair.json
-        repair_json = scheduler_agent.generate_repair_plan_json(
-            diagnostic_run,
-            root_cause,
-            confidence,
-            experiment_performed,
-            output_dir
-        )
+        if is_normal_stage0 and normal_confidence >= 0.70:
+            # Bypass Active Experiment and Scheduler for Normal cases
+            print(f"  → Stage-0: NORMAL detected ({normal_confidence*100:.1f}% confidence), bypassing experiments")
+            
+            # CRITICAL: Override root_cause to "Normal" (Bayesian may have chosen a fault)
+            root_cause = "Normal"
+            
+            # Phase 3: Skip Active Experiment (not needed for Normal)
+            experiment_json = {
+                "run_id": diagnostic_run.run_id,
+                "experiment_required": False,
+                "reason": f"Stage-0 classified as Normal ({normal_confidence*100:.1f}% confidence)",
+                "root_cause": "Normal",
+                "confidence": normal_confidence
+            }
+            
+            # Phase 4: Minimal Scheduler (no repair needed)
+            repair_json = {
+                "run_id": diagnostic_run.run_id,
+                "root_cause": "Normal",
+                "priority": "none",
+                "urgency": "none",
+                "estimated_repair_time": "0 hours",
+                "estimated_downtime_hours": 0,
+                "repair_actions": ["No repair required - system operating normally"],
+                "recommended_repair": "No repair required - system operating normally",
+                "confidence": normal_confidence
+            }
+            
+            experiment_performed = False
+            confidence = normal_confidence
+            
+        else:
+            # Standard pipeline for Faulty cases
+            # Phase 3: Active Experiment Design
+            experiment_results = experiment_agent.process_run(
+                diagnostic_run,
+                root_cause,
+                posteriors,
+                ranked_causes
+            )
+            
+            # Generate experiment.json
+            experiment_json = experiment_agent.generate_experiment_instruction(
+                diagnostic_run,
+                root_cause,
+                experiment_results["alternate_causes"],
+                posteriors,
+                experiment_results["uncertainty_level"],
+                output_dir
+            )
+            
+            # Phase 4: Repair Scheduling
+            experiment_performed = experiment_results["experiment_required"]
+            confidence = posteriors.get(root_cause, 0)
+            
+            scheduler_results = scheduler_agent.process_run(
+                diagnostic_run,
+                root_cause,
+                confidence,
+                experiment_performed
+            )
+            
+            # Generate repair.json
+            repair_json = scheduler_agent.generate_repair_plan_json(
+                diagnostic_run,
+                root_cause,
+                confidence,
+                experiment_performed,
+                output_dir
+            )
         
         # Phase 5: Explanation Generation
         explanation_results = explanation_agent.process_run(

@@ -25,6 +25,7 @@ MANIFEST
 
 # Virtual environments
 venv/
+venv_person_c/
 ENV/
 env/
 .venv
@@ -60,3 +61,9 @@ htmlcov/
 # Logs
 *.log
 logs/
+
+# Project-specific data directories
+runs/
+datasets/raw/
+datasets/cwru/
+results/

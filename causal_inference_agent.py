@@ -43,8 +43,17 @@ class CausalInferenceAgent:
     def __init__(self):
         """Initialize Causal Inference Agent with fault signature knowledge."""
         
+        # UPGRADE: Add Normal as explicit hypothesis (Stage-0 detection)
         # Define causal fault signatures (prior knowledge)
         self.fault_signatures = {
+            "Normal": {
+                "rms_vibration": {"mean": 0.50, "std": 0.25, "weight": 0.25},
+                "dominant_frequency": {"mean": 500, "std": 400, "weight": 0.10},
+                "spectral_entropy": {"mean": 0.40, "std": 0.10, "weight": 0.25},
+                "bearing_energy_band": {"mean": 0.50, "std": 0.15, "weight": 0.20},
+                "audio_anomaly_score": {"mean": 0.10, "std": 0.15, "weight": 0.15},
+                "speed_dependency": {"strong": 0.20, "medium": 0.50, "weak": 0.30, "weight": 0.05}
+            },
             "Loose Mount": {
                 "rms_vibration": {"mean": 4.25, "std": 0.75, "weight": 0.25},
                 "dominant_frequency": {"mean": 140, "std": 50, "weight": 0.15},
@@ -54,12 +63,17 @@ class CausalInferenceAgent:
                 "speed_dependency": {"strong": 0.75, "medium": 0.20, "weak": 0.05, "weight": 0.25}
             },
             "Bearing Wear": {
+                # UPGRADE Phase 3: Refined priors for bearing sub-type discrimination
+                # CRITICAL: Tighter std on frequency to separate ball (narrow HF) vs inner/outer (broader)
+                # Ball faults: 2500-3500 Hz narrowband (std=400)
+                # Inner faults: 2000-3500 Hz broader (std=700)
+                # Outer faults: 1500-3000 Hz with sidebands (std=600)
                 "rms_vibration": {"mean": 2.25, "std": 0.60, "weight": 0.15},
-                "dominant_frequency": {"mean": 2750, "std": 600, "weight": 0.20},
-                "spectral_entropy": {"mean": 0.915, "std": 0.05, "weight": 0.25},
-                "bearing_energy_band": {"mean": 0.85, "std": 0.08, "weight": 0.25},
-                "audio_anomaly_score": {"mean": 0.80, "std": 0.08, "weight": 0.10},
-                "speed_dependency": {"strong": 0.10, "medium": 0.30, "weak": 0.60, "weight": 0.05}
+                "dominant_frequency": {"mean": 2850, "std": 400, "weight": 0.30},  # Tighter, higher mean
+                "spectral_entropy": {"mean": 0.915, "std": 0.05, "weight": 0.20},
+                "bearing_energy_band": {"mean": 0.88, "std": 0.06, "weight": 0.25},  # Tighter, higher mean
+                "audio_anomaly_score": {"mean": 0.85, "std": 0.08, "weight": 0.10},
+                "speed_dependency": {"strong": 0.10, "medium": 0.30, "weak": 0.60, "weight": 0.00}  # Less relevant
             },
             "Imbalance": {
                 "rms_vibration": {"mean": 3.0, "std": 0.70, "weight": 0.20},
@@ -79,12 +93,13 @@ class CausalInferenceAgent:
             }
         }
         
-        # Base prior probabilities (uniform initially)
+        # UPGRADE: Include Normal in priors (equal weight initially)
         self.prior_probabilities = {
-            "Loose Mount": 0.25,
-            "Bearing Wear": 0.25,
-            "Imbalance": 0.25,
-            "Misalignment": 0.25
+            "Normal": 0.20,
+            "Loose Mount": 0.20,
+            "Bearing Wear": 0.20,
+            "Imbalance": 0.20,
+            "Misalignment": 0.20
         }
         
         self.feature_correlations: Optional[Dict[str, Any]] = None
@@ -293,7 +308,46 @@ class CausalInferenceAgent:
         # Normalize to sum to 1 (using Phase 3 robust normalization)
         posteriors = normalize_probabilities(posteriors)
         
-        return posteriors
+        # UPGRADE Phase 2: Temperature scaling and confidence damping for calibration
+        # Problem: Overconfident predictions (incorrect preds had higher conf than correct)
+        # Solution: Apply temperature scaling to soften distributions + entropy damping
+        
+        # 1. Temperature scaling (T > 1 softens, T < 1 sharpens)
+        temperature = 1.2  # Moderate softening (was 1.5, too aggressive)
+        posteriors_tempered = {}
+        for cause, prob in posteriors.items():
+            # Apply temperature: p_i^(1/T) / sum(p_j^(1/T))
+            posteriors_tempered[cause] = prob ** (1.0 / temperature)
+        
+        # Re-normalize after temperature scaling
+        posteriors_tempered = normalize_probabilities(posteriors_tempered)
+        
+        # 2. Entropy-based confidence damping (REDUCED - was too aggressive)
+        # High entropy (uncertain evidence) → shrink probabilities toward uniform
+        # Low entropy (clear signal) → keep sharp distribution
+        feature_entropy = features.spectral_entropy
+        
+        # Damping factor: 0.0 (no damping) to 1.0 (full damping toward uniform)
+        # REDUCED damping to preserve more signal
+        if feature_entropy > 0.90:
+            damping = 0.15  # Moderate damping for very high-entropy (was 0.3)
+        elif feature_entropy > 0.75:
+            damping = 0.08  # Light damping (was 0.15)
+        elif feature_entropy > 0.55:
+            damping = 0.03  # Very light (was 0.05)
+        else:
+            damping = 0.0  # No damping for clear signals
+        
+        # Apply damping: mix posteriors with uniform distribution
+        uniform_prob = 1.0 / len(posteriors_tempered)
+        posteriors_damped = {}
+        for cause, prob in posteriors_tempered.items():
+            posteriors_damped[cause] = (1 - damping) * prob + damping * uniform_prob
+        
+        # Final normalization
+        posteriors_damped = normalize_probabilities(posteriors_damped)
+        
+        return posteriors_damped
     
     def rank_cause_probabilities(
         self,
@@ -503,6 +557,171 @@ class CausalInferenceAgent:
         
         return cause_json
     
+    def detect_normal_vs_fault(
+        self,
+        current_run: DiagnosticRun,
+        normal_threshold: float = 0.70
+    ) -> Tuple[bool, float, str]:
+        """
+        STAGE-0: Decide Normal vs Faulty before detailed fault classification.
+        
+        UPGRADED (Phase 1 Fix):
+        Uses data-driven thresholds based on CWRU Normal vs Fault distributions:
+        
+        NORMAL indicators (ALL must be true for high confidence):
+        - RMS vibration < 0.085 (Normal max=0.067, Fault min=0.098)
+        - Bearing energy < 0.58 (Normal max=0.496, Fault min=0.659)
+        - Audio anomaly < 0.15 (Normal max=0.039, Fault min=0.485)
+        
+        SOFT indicators (support but not decisive):
+        - Spectral entropy 0.38-0.44 (Normal typical, but overlaps with Fault)
+        - Dominant frequency NOT in bearing fault bands (2-5 kHz)
+        
+        Returns:
+            Tuple of (is_normal, confidence, reasoning)
+        """
+        features = current_run.features
+        
+        # ================================================================
+        # HARD RULES: Physical safety thresholds from data distribution
+        # ================================================================
+        hard_thresholds = {
+            "rms_vibration": 0.085,      # Midpoint between Normal max (0.067) and Fault min (0.098)
+            "bearing_energy_band": 0.58,  # Midpoint between Normal max (0.496) and Fault min (0.659)
+            "audio_anomaly_score": 0.15   # Well below Fault min (0.485), above Normal max (0.039)
+        }
+        
+        # Track hard rule violations
+        hard_violations = []
+        hard_passes = []
+        
+        # Check RMS vibration
+        if features.rms_vibration >= hard_thresholds["rms_vibration"]:
+            hard_violations.append(f"RMS={features.rms_vibration:.3f} >= {hard_thresholds['rms_vibration']}")
+        else:
+            hard_passes.append(f"RMS={features.rms_vibration:.3f} < {hard_thresholds['rms_vibration']}")
+        
+        # Check bearing energy
+        if features.bearing_energy_band >= hard_thresholds["bearing_energy_band"]:
+            hard_violations.append(f"Bearing={features.bearing_energy_band:.3f} >= {hard_thresholds['bearing_energy_band']}")
+        else:
+            hard_passes.append(f"Bearing={features.bearing_energy_band:.3f} < {hard_thresholds['bearing_energy_band']}")
+        
+        # Check audio anomaly
+        if features.audio_anomaly_score >= hard_thresholds["audio_anomaly_score"]:
+            hard_violations.append(f"Anomaly={features.audio_anomaly_score:.3f} >= {hard_thresholds['audio_anomaly_score']}")
+        else:
+            hard_passes.append(f"Anomaly={features.audio_anomaly_score:.3f} < {hard_thresholds['audio_anomaly_score']}")
+        
+        # ================================================================
+        # PROBABILISTIC SCORING: Weighted evidence accumulation
+        # ================================================================
+        normal_scores = []
+        reasoning_parts = []
+        
+        # 1. RMS vibration (weight: 0.35 - CRITICAL)
+        # Normal range: 0.064-0.067, Fault range: 0.098-1.108
+        if features.rms_vibration < 0.070:
+            rms_score = 1.0
+            reasoning_parts.append(f"very low RMS ({features.rms_vibration:.3f})")
+        elif features.rms_vibration < hard_thresholds["rms_vibration"]:
+            # Linear decay from 1.0 at 0.070 to 0.0 at 0.085
+            rms_score = 1.0 - (features.rms_vibration - 0.070) / (hard_thresholds["rms_vibration"] - 0.070)
+            reasoning_parts.append(f"low RMS ({features.rms_vibration:.3f})")
+        else:
+            rms_score = 0.0
+            reasoning_parts.append(f"elevated RMS ({features.rms_vibration:.3f})")
+        normal_scores.append(("rms", rms_score, 0.35))
+        
+        # 2. Bearing energy band (weight: 0.35 - CRITICAL)
+        # Normal range: 0.420-0.496, Fault range: 0.659-0.998
+        if features.bearing_energy_band < 0.50:
+            bearing_score = 1.0
+            reasoning_parts.append(f"very low bearing energy ({features.bearing_energy_band:.3f})")
+        elif features.bearing_energy_band < hard_thresholds["bearing_energy_band"]:
+            # Linear decay from 1.0 at 0.50 to 0.0 at 0.58
+            bearing_score = 1.0 - (features.bearing_energy_band - 0.50) / (hard_thresholds["bearing_energy_band"] - 0.50)
+            reasoning_parts.append(f"low bearing energy ({features.bearing_energy_band:.3f})")
+        else:
+            bearing_score = 0.0
+            reasoning_parts.append(f"high bearing energy ({features.bearing_energy_band:.3f})")
+        normal_scores.append(("bearing", bearing_score, 0.35))
+        
+        # 3. Audio anomaly score (weight: 0.20 - IMPORTANT)
+        # Normal range: 0.001-0.039, Fault range: 0.485-1.000
+        if features.audio_anomaly_score < 0.05:
+            anomaly_score = 1.0
+            reasoning_parts.append(f"minimal anomaly ({features.audio_anomaly_score:.3f})")
+        elif features.audio_anomaly_score < hard_thresholds["audio_anomaly_score"]:
+            # Linear decay from 1.0 at 0.05 to 0.0 at 0.15
+            anomaly_score = 1.0 - (features.audio_anomaly_score - 0.05) / (hard_thresholds["audio_anomaly_score"] - 0.05)
+            reasoning_parts.append(f"low anomaly ({features.audio_anomaly_score:.3f})")
+        else:
+            anomaly_score = 0.0
+            reasoning_parts.append(f"high anomaly ({features.audio_anomaly_score:.3f})")
+        normal_scores.append(("anomaly", anomaly_score, 0.20))
+        
+        # 4. Spectral entropy (weight: 0.10 - SUPPORTING, overlaps significantly)
+        # Normal range: 0.401-0.410, Fault range: 0.331-0.518 (OVERLAPPING!)
+        if 0.38 <= features.spectral_entropy <= 0.44:
+            entropy_score = 1.0
+            reasoning_parts.append(f"normal-range entropy ({features.spectral_entropy:.3f})")
+        elif features.spectral_entropy < 0.38:
+            # Too low - might be unusual
+            entropy_score = 0.5
+            reasoning_parts.append(f"low entropy ({features.spectral_entropy:.3f})")
+        elif features.spectral_entropy > 0.44:
+            # Higher entropy - possible fault
+            entropy_score = max(0.0, 1.0 - (features.spectral_entropy - 0.44) / 0.10)
+            reasoning_parts.append(f"elevated entropy ({features.spectral_entropy:.3f})")
+        else:
+            entropy_score = 0.5
+        normal_scores.append(("entropy", entropy_score, 0.10))
+        
+        # ================================================================
+        # CONFIDENCE COMPUTATION
+        # ================================================================
+        
+        # Weighted average of probabilistic scores
+        normal_confidence_base = sum(score * weight for _, score, weight in normal_scores)
+        
+        # HARD RULE GATE: If ANY hard threshold violated, cap confidence at 0.50
+        if len(hard_violations) > 0:
+            normal_confidence = min(normal_confidence_base, 0.50)
+            gate_applied = True
+        else:
+            # All hard rules passed - boost confidence
+            normal_confidence = min(normal_confidence_base * 1.15, 1.0)  # 15% boost for passing all gates
+            gate_applied = False
+        
+        normal_confidence = float(np.clip(normal_confidence, 0.0, 1.0))
+        
+        # ================================================================
+        # DECISION & REASONING
+        # ================================================================
+        
+        is_normal = normal_confidence >= normal_threshold
+        
+        # Build detailed reasoning
+        if is_normal:
+            reasoning = f"NORMAL DETECTED: {', '.join(reasoning_parts[:3])}"
+            if gate_applied:
+                reasoning += f" | WARNING: Some thresholds borderline"
+            reasoning += f" → {normal_confidence*100:.1f}% normal confidence"
+            reasoning += f" | Hard checks: {len(hard_passes)}/3 passed"
+        else:
+            reasoning = f"FAULT DETECTED: {', '.join(reasoning_parts[:3])}"
+            if len(hard_violations) > 0:
+                reasoning += f" | Hard violations: {hard_violations[0]}"
+            reasoning += f" → {(1-normal_confidence)*100:.1f}% fault confidence"
+            reasoning += f" | Hard checks: {len(hard_passes)}/3 passed"
+        
+        # Log decision for transparency
+        print(f"  [Stage-0] {current_run.run_id}: normal_conf={normal_confidence:.3f}, "
+              f"hard_passes={len(hard_passes)}/3, decision={'NORMAL' if is_normal else 'FAULT'}")
+        
+        return is_normal, normal_confidence, reasoning
+    
     def process_run(
         self,
         current_run: DiagnosticRun,
@@ -512,14 +731,19 @@ class CausalInferenceAgent:
         """
         Main processing method that orchestrates all causal inference tools.
         
+        UPGRADE: Includes Stage-0 normal detection.
+        
         Args:
             current_run: Current diagnostic run
             fleet_matches: Matched fleet vehicles from FleetMatchingAgent
             fleet_cause_probs: Cause probabilities from fleet matching
             
         Returns:
-            Comprehensive causal inference results
+            Comprehensive causal inference results including Stage-0 decision
         """
+        # STAGE-0: Normal vs Fault detection
+        is_normal, normal_conf, normal_reasoning = self.detect_normal_vs_fault(current_run)
+        
         # Execute tool pipeline
         correlations = self.compute_feature_correlations(current_run, fleet_matches)
         causal_graph = self.compute_causal_graph(current_run)
@@ -536,8 +760,14 @@ class CausalInferenceAgent:
         
         root_cause, confidence = ranked_causes[0]
         
+        # UPGRADE: Include Stage-0 results in output
         return {
             "run_id": current_run.run_id,
+            "stage0_normal_detection": {
+                "is_normal": is_normal,
+                "normal_confidence": normal_conf,
+                "reasoning": normal_reasoning
+            },
             "root_cause": root_cause,
             "confidence": confidence,
             "posteriors": posteriors,

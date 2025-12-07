@@ -331,45 +331,75 @@ class ExplanationAgent:
         # Section 6: Repair Recommendation
         report_lines.append("6. REPAIR RECOMMENDATION")
         report_lines.append("-" * 80)
-        report_lines.append(f"**Primary Action**: {repair_json['recommended_repair']}")
-        report_lines.append("")
-        report_lines.append(f"**Urgency Level**: {repair_json['urgency']}")
         
-        if "urgency_details" in repair_json:
-            reasons = repair_json["urgency_details"].get("reasons", [])
-            if reasons:
-                report_lines.append("Urgency Factors:")
-                for reason in reasons:
-                    report_lines.append(f"  - {reason}")
-        
-        report_lines.append("")
-        report_lines.append(f"**Estimated Downtime**: {repair_json['estimated_downtime_hours']} hours")
-        report_lines.append(f"**Complexity**: {repair_json.get('complexity', 'Medium').title()}")
-        report_lines.append("")
-        
-        # Workshop requirements
-        report_lines.append(f"**Recommended Workshop**: {repair_json['suggested_workshop_type']}")
-        if "workshop_requirements" in repair_json:
-            workshop = repair_json["workshop_requirements"]
-            if workshop.get("certifications"):
-                report_lines.append(f"Required Certifications: {', '.join(workshop['certifications'])}")
-        
-        report_lines.append("")
-        
-        # Cost estimate
-        if "cost_estimate_range" in repair_json:
-            cost = repair_json["cost_estimate_range"]
+        # NORMAL PATH: Simplified report for normal operating conditions
+        # - No repair needed, so we skip downtime/cost/urgency details
+        # - Just confirm the system is operating normally
+        root_cause_lower = cause_json.get("root_cause", "").lower()
+        if root_cause_lower == "normal":
+            report_lines.append("**Status**: System operating normally")
+            report_lines.append("")
+            report_lines.append("**Recommendation**: No immediate repair required")
+            report_lines.append("")
             report_lines.append(
-                f"**Estimated Cost**: ${cost['min_usd']} - ${cost['max_usd']} USD "
-                f"({cost.get('includes', 'parts and labor')})"
+                "All monitored parameters are within acceptable ranges. "
+                "Continue routine maintenance schedule."
             )
-        
-        report_lines.append("")
-        
-        # Risk assessment
-        report_lines.append("**Risk if Ignored**:")
-        report_lines.append(repair_json.get("risk_if_ignored", "Progressive component degradation"))
-        report_lines.append("")
+            report_lines.append("")
+        else:
+            # FAULT PATH: Detailed repair recommendations for fault cases
+            # - Use .get() with sensible defaults to avoid KeyError if fields are missing
+            # - This makes the system robust while still showing details when available
+            
+            recommended_repair = repair_json.get('recommended_repair', 'See detailed analysis')
+            report_lines.append(f"**Primary Action**: {recommended_repair}")
+            report_lines.append("")
+            
+            urgency = repair_json.get('urgency', 'Medium')
+            report_lines.append(f"**Urgency Level**: {urgency}")
+            
+            if "urgency_details" in repair_json:
+                reasons = repair_json["urgency_details"].get("reasons", [])
+                if reasons:
+                    report_lines.append("Urgency Factors:")
+                    for reason in reasons:
+                        report_lines.append(f"  - {reason}")
+            
+            report_lines.append("")
+            
+            # Downtime estimate - default to "Unknown" if not specified
+            downtime = repair_json.get('estimated_downtime_hours', 'Unknown')
+            report_lines.append(f"**Estimated Downtime**: {downtime} hours")
+            
+            complexity = repair_json.get('complexity', 'Medium').title()
+            report_lines.append(f"**Complexity**: {complexity}")
+            report_lines.append("")
+            
+            # Workshop requirements - default to "General workshop" if not specified
+            workshop_type = repair_json.get('suggested_workshop_type', 'General workshop')
+            report_lines.append(f"**Recommended Workshop**: {workshop_type}")
+            
+            if "workshop_requirements" in repair_json:
+                workshop = repair_json["workshop_requirements"]
+                if workshop.get("certifications"):
+                    report_lines.append(f"Required Certifications: {', '.join(workshop['certifications'])}")
+            
+            report_lines.append("")
+            
+            # Cost estimate - only show if present
+            if "cost_estimate_range" in repair_json:
+                cost = repair_json["cost_estimate_range"]
+                report_lines.append(
+                    f"**Estimated Cost**: ${cost['min_usd']} - ${cost['max_usd']} USD "
+                    f"({cost.get('includes', 'parts and labor')})"
+                )
+                report_lines.append("")
+            
+            # Risk assessment - default to generic warning if not specified
+            risk = repair_json.get("risk_if_ignored", "Progressive component degradation and potential system failure")
+            report_lines.append("**Risk if Ignored**:")
+            report_lines.append(risk)
+            report_lines.append("")
         
         # Section 7: Detailed Steps (optional)
         if "detailed_steps" in repair_json:
@@ -470,11 +500,11 @@ class ExplanationAgent:
                 "instruction": experiment_json.get("instruction")
             },
             "repair_plan": {
-                "action": repair_json["recommended_repair"],
-                "urgency": repair_json["urgency"],
-                "downtime_hours": repair_json["estimated_downtime_hours"],
-                "workshop": repair_json["suggested_workshop_type"],
-                "risk": repair_json["risk_if_ignored"]
+                "action": repair_json.get("recommended_repair", "No action required"),
+                "urgency": repair_json.get("urgency", "none"),
+                "downtime_hours": repair_json.get("estimated_downtime_hours", 0),
+                "workshop": repair_json.get("suggested_workshop_type", "Not applicable"),
+                "risk": repair_json.get("risk_if_ignored", "None")
             },
             "fleet_context": {
                 "matches_analyzed": len(fleet_summary.get("top_matches", [])),
