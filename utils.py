@@ -3,7 +3,7 @@ Utility functions for MIRA Wave Person C diagnostic system.
 """
 
 import numpy as np
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 import json
 from pathlib import Path
 
@@ -42,12 +42,17 @@ def normalize_probabilities(probs: Dict[str, float], eps: float = 1e-10) -> Dict
     """
     Normalize a probability distribution to sum to 1.0 with robust handling.
     
+    This is the Phase 3 enhanced version with comprehensive safety checks.
+    
     Args:
         probs: Dictionary of probabilities (may contain NaN, inf, or negative values)
         eps: Minimum total to avoid division by zero
         
     Returns:
-        Normalized probability distribution
+        Normalized probability distribution that:
+        - Sums to exactly 1.0 (or uniform if all values invalid)
+        - Contains only finite positive values
+        - Never returns NaN or inf
     """
     if not probs:
         return probs
@@ -68,7 +73,65 @@ def normalize_probabilities(probs: Dict[str, float], eps: float = 1e-10) -> Dict
         return {k: 1.0 / n for k in clean_probs.keys()}
     
     # Normalize
-    return {k: v / total for k, v in clean_probs.items()}
+    normalized = {k: v / total for k, v in clean_probs.items()}
+    
+    # Final safety check: ensure sum is exactly 1.0 (fix floating point errors)
+    actual_sum = sum(normalized.values())
+    if abs(actual_sum - 1.0) > 1e-6:
+        # Renormalize if needed
+        normalized = {k: v / actual_sum for k, v in normalized.items()}
+    
+    return normalized
+
+
+def get_top_probability(probs: Dict[str, float]) -> Tuple[str, float]:
+    """
+    Get the key with highest probability and its value.
+    
+    Args:
+        probs: Probability distribution dictionary
+        
+    Returns:
+        Tuple of (top_key, top_probability)
+        Returns ("unknown", 0.0) if dict is empty
+    """
+    if not probs:
+        return ("unknown", 0.0)
+    
+    # Find max, ensuring finite values
+    max_key = None
+    max_prob = -float('inf')
+    
+    for k, v in probs.items():
+        if np.isfinite(v) and v > max_prob:
+            max_key = k
+            max_prob = v
+    
+    if max_key is None:
+        # All values were non-finite
+        keys = list(probs.keys())
+        return (keys[0] if keys else "unknown", 0.0)
+    
+    return (max_key, float(max_prob))
+
+
+def compute_probability_confidence(probs: Dict[str, float]) -> float:
+    """
+    Compute confidence score from probability distribution.
+    
+    Confidence is the maximum probability value, clamped to [0, 1].
+    
+    Args:
+        probs: Probability distribution
+        
+    Returns:
+        Confidence score in [0, 1]
+    """
+    if not probs:
+        return 0.0
+    
+    _, max_prob = get_top_probability(probs)
+    return float(np.clip(max_prob, 0.0, 1.0))
 
 
 def convert_to_serializable(obj):

@@ -22,10 +22,16 @@ from pathlib import Path
 
 try:
     from .data_models import DiagnosticRun, FeatureVector, FleetMatch
-    from .utils import normalize_probabilities, save_json, safe_corrcoef, ensure_finite
+    from .utils import (
+        normalize_probabilities, save_json, safe_corrcoef, ensure_finite,
+        get_top_probability, compute_probability_confidence
+    )
 except ImportError:
     from data_models import DiagnosticRun, FeatureVector, FleetMatch
-    from utils import normalize_probabilities, save_json, safe_corrcoef, ensure_finite
+    from utils import (
+        normalize_probabilities, save_json, safe_corrcoef, ensure_finite,
+        get_top_probability, compute_probability_confidence
+    )
 
 
 class CausalInferenceAgent:
@@ -216,13 +222,14 @@ class CausalInferenceAgent:
         Tool 4: Compute Bayesian posterior probabilities for each cause.
         
         Uses feature likelihoods and fleet-informed priors.
+        Phase 3 enhanced: ensures posteriors are always finite and normalized.
         
         Args:
             current_run: Current diagnostic run
             fleet_cause_probs: Prior probabilities from fleet matching
             
         Returns:
-            Posterior probability distribution over causes
+            Posterior probability distribution over causes (guaranteed to sum to 1.0)
         """
         features = current_run.features
         posteriors = {}
@@ -245,12 +252,20 @@ class CausalInferenceAgent:
                     sig = signature[feature_name]
                     mean, std, weight = sig["mean"], sig["std"], sig["weight"]
                     
-                    # Gaussian probability density
+                    # Gaussian probability density (with safety checks)
                     prob = stats.norm.pdf(feature_value, mean, std)
-                    # Normalize to 0-1 range (approximate)
-                    normalized_prob = min(prob / stats.norm.pdf(mean, mean, std), 1.0)
+                    max_prob = stats.norm.pdf(mean, mean, std)
                     
-                    # Apply weighted contribution
+                    # Normalize to 0-1 range (with division safety)
+                    if max_prob > 1e-10:
+                        normalized_prob = min(prob / max_prob, 1.0)
+                    else:
+                        normalized_prob = 0.5  # Neutral if signature std is degenerate
+                    
+                    # Ensure finite
+                    normalized_prob = ensure_finite(normalized_prob, 0.5)
+                    
+                    # Apply weighted contribution (multiplicative model)
                     likelihood *= (1 - weight + weight * normalized_prob)
             
             # Categorical feature: speed_dependency
@@ -260,8 +275,13 @@ class CausalInferenceAgent:
                 speed_weight = speed_sig["weight"]
                 likelihood *= (1 - speed_weight + speed_weight * speed_prob)
             
+            # Ensure likelihood is finite and positive
+            likelihood = max(ensure_finite(likelihood, 0.01), 1e-6)
+            
             # Combine with fleet prior
             fleet_prior = fleet_cause_probs.get(cause, 0.25)
+            fleet_prior = max(ensure_finite(fleet_prior, 0.25), 0.01)
+            
             base_prior = self.prior_probabilities[cause]
             
             # Weighted average of base prior and fleet prior
@@ -270,7 +290,7 @@ class CausalInferenceAgent:
             # Posterior = likelihood × prior
             posteriors[cause] = likelihood * combined_prior
         
-        # Normalize to sum to 1
+        # Normalize to sum to 1 (using Phase 3 robust normalization)
         posteriors = normalize_probabilities(posteriors)
         
         return posteriors
@@ -405,6 +425,8 @@ class CausalInferenceAgent:
         """
         Tool 8: Export causal inference results to cause.json format.
         
+        Phase 3 enhanced: guarantees all probabilities are finite and valid.
+        
         Args:
             current_run: Current diagnostic run
             posteriors: Posterior probability distribution
@@ -413,14 +435,23 @@ class CausalInferenceAgent:
             output_dir: Directory to save output
             
         Returns:
-            Dictionary in cause.json format
+            Dictionary in cause.json format with validated probabilities
         """
-        root_cause, confidence = ranked_causes[0]
+        # Use safe extraction (handles empty list gracefully)
+        if ranked_causes:
+            root_cause, confidence = ranked_causes[0]
+        else:
+            # Fallback if ranking failed
+            root_cause, confidence = get_top_probability(posteriors)
+        
+        # Ensure confidence is in valid range
+        confidence = float(np.clip(confidence, 0.0, 1.0))
         
         # Build alternate causes (exclude root cause)
         alternate_causes = {
-            cause: prob 
+            cause: float(np.clip(prob, 0.0, 1.0))
             for cause, prob in ranked_causes[1:4]  # Top 3 alternates
+            if cause != root_cause
         }
         
         # Generate reasoning based on features
@@ -445,8 +476,13 @@ class CausalInferenceAgent:
         if features.speed_dependency == "strong":
             reasoning_parts.append("strong speed dependency")
         
-        reasoning = " combined with ".join(reasoning_parts[:3])
+        reasoning = " combined with ".join(reasoning_parts[:3]) if reasoning_parts else "Feature analysis"
         reasoning += f" matches {root_cause} behavior with {confidence*100:.0f}% confidence based on fleet correlation and causal signature analysis."
+        
+        # Build confidence interval (with safety checks)
+        ci_lower, ci_upper = confidence_intervals.get(root_cause, (confidence * 0.8, min(confidence * 1.2, 1.0)))
+        ci_lower = float(np.clip(ci_lower, 0.0, 1.0))
+        ci_upper = float(np.clip(ci_upper, 0.0, 1.0))
         
         cause_json = {
             "run_id": current_run.run_id,
@@ -455,8 +491,8 @@ class CausalInferenceAgent:
             "alternate_causes": {k: round(v, 3) for k, v in alternate_causes.items()},
             "reasoning": reasoning,
             "confidence_interval": {
-                "lower": round(confidence_intervals[root_cause][0], 3),
-                "upper": round(confidence_intervals[root_cause][1], 3)
+                "lower": round(ci_lower, 3),
+                "upper": round(ci_upper, 3)
             }
         }
         

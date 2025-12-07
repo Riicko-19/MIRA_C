@@ -171,6 +171,8 @@ class ActiveExperimentAgent:
         """
         Tool 1: Check if diagnostic uncertainty requires an active experiment.
         
+        Phase 3 enhanced: ensures confidence and uncertainty are always finite.
+        
         Args:
             confidence: Confidence in root cause prediction
             cause_probabilities: Probability distribution over causes
@@ -178,20 +180,31 @@ class ActiveExperimentAgent:
         Returns:
             Tuple of (experiment_required, uncertainty_level)
         """
+        # Ensure confidence is finite and in valid range
+        confidence = float(np.clip(confidence, 0.0, 1.0))
+        
+        # Clear rule: experiment required if confidence below threshold
         experiment_required = confidence < self.confidence_threshold
         
-        # Compute entropy-based uncertainty
-        probs = list(cause_probabilities.values())
-        probs = [p for p in probs if p > 0]
+        # Compute entropy-based uncertainty (robust version)
+        probs = [p for p in cause_probabilities.values() if np.isfinite(p) and p > 0]
         
-        if probs:
+        if len(probs) > 1:
+            # Shannon entropy
             entropy = -sum(p * np.log2(p) for p in probs)
             max_entropy = np.log2(len(probs))
-            normalized_uncertainty = entropy / max_entropy if max_entropy > 0 else 0
+            normalized_uncertainty = entropy / max_entropy if max_entropy > 0 else 0.0
+        elif len(probs) == 1:
+            # Only one cause has non-zero probability → no uncertainty
+            normalized_uncertainty = 0.0
         else:
+            # No valid probabilities → maximum uncertainty
             normalized_uncertainty = 1.0
         
-        return experiment_required, float(normalized_uncertainty)
+        # Ensure uncertainty is finite
+        normalized_uncertainty = float(np.clip(normalized_uncertainty, 0.0, 1.0))
+        
+        return experiment_required, normalized_uncertainty
     
     def design_new_speed_profile(
         self,
